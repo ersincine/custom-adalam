@@ -5,15 +5,16 @@ import sys
 from adalam import AdalamFilter
 
 
-def extract_keypoints(impath):
+def extract_keypoints(impath, nfeatures=8000, rootsift=True):
     im = cv.imread(impath, cv.IMREAD_COLOR)
-    d = cv.xfeatures2d.SIFT_create(nfeatures=8000, contrastThreshold=1e-5)
-    kp1, desc1 = d.detectAndCompute(im, mask=np.ones(shape=im.shape[:-1] + (1,),
-                                                              dtype=np.uint8))
-    pts = np.array([k.pt for k in kp1], dtype=np.float32)
-    ors = np.array([k.angle for k in kp1], dtype=np.float32)
-    scs = np.array([k.size for k in kp1], dtype=np.float32)
-    return pts, ors, scs, desc1, im
+    d = cv.SIFT_create(nfeatures, contrastThreshold=1e-5)
+    kp, desc = d.detectAndCompute(im, mask=np.ones(shape=im.shape[:-1] + (1,), dtype=np.uint8))
+    if rootsift:
+        desc /= np.sqrt(desc.sum(axis=1, keepdims=True) + 1e-16)
+    pts = np.array([k.pt for k in kp], dtype=np.float32)
+    ors = np.array([k.angle for k in kp], dtype=np.float32)
+    scs = np.array([k.size for k in kp], dtype=np.float32)
+    return pts, ors, scs, desc, im
 
 
 def show_matches(img1, img2, k1, k2, target_dim=800.):
