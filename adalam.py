@@ -1,3 +1,4 @@
+from math import e
 from core import adalam_core
 from utils import dist_matrix
 from tqdm import tqdm
@@ -9,6 +10,8 @@ import sqlite3
 
 class AdalamFilter:
     DEFAULT_CONFIG = {
+        'scoring_method': "rt",  # 'rt' for ratio test, 'r1' for response of the keypoint in the first image
+        'match_threshold': 0.8 ** 2,  # Threshold on the score for a match to be considered as seed. Higher values produce fewer matches.
         'area_ratio': 100,  # Ratio between seed circle area and image area. Higher values produce more seeds with smaller neighborhoods.
         'search_expansion': 4,  # Expansion factor of the seed circle radius for the purpose of collecting neighborhoods. Increases neighborhood radius without changing seed distribution
         'ransac_iters': 128,  # Fixed number of inner GPU-RANSAC iterations
@@ -39,6 +42,20 @@ class AdalamFilter:
                           "Known configurations are {list(self.config.keys())}.")
                     continue
                 self.config[key] = val
+
+
+    def calculate_matches_and_scores(self, distmat: torch.Tensor, extras: dict):
+        if self.config['scoring_method'] == 'rt':
+            dd12, nn12 = torch.topk(distmat, k=2, dim=1, largest=False)  # (n1, 2)
+            putative_matches = nn12[:, 0]
+            scores = dd12[:, 0] / dd12[:, 1].clamp_min_(1e-3)
+        elif self.config['scoring_method'] == 'r1':
+            _, putative_matches = torch.min(distmat, dim=1)  # (n1, 2)
+            scores = -next(extras['r1'])  # Higher response is better
+        else:
+            raise NotImplementedError(f'Unknown scoring method: {self.config["scoring_method"]}')
+        return putative_matches, scores
+
 
     def filter_matches(self, k1: torch.Tensor, k2: torch.Tensor,
                        putative_matches: torch.Tensor,
@@ -89,7 +106,7 @@ class AdalamFilter:
 
 
     def match_and_filter(self, k1, k2, d1, d2, im1shape=None, im2shape=None,
-               o1=None, o2=None, s1=None, s2=None):
+               o1=None, o2=None, s1=None, s2=None, extras=None):
         """
             Standard matching and filtering with AdaLAM.
             This function:
@@ -118,11 +135,16 @@ class AdalamFilter:
                 s1/s2: keypoint scales. They can be None if 'scale_rate_threshold' in config is set to None.
                        See documentation on 'scale_rate_threshold' in the DEFAULT_CONFIG.
                        Expected an array with shape (num_keypoints_in_source/destination_image,)
+                extras: dictionary containing additional information to be used for matching.
+                        Currently supported keys are:
+                            - 'r1': responses of the keypoints in the first image. Expected an array with shape (num_keypoints_in_source_image,).
 
             Returns:
                 Filtered putative matches.
                 A long tensor with shape (num_filtered_matches, 2) with indices of corresponding keypoints in k1 and k2.
         """
+        if extras is None:
+            extras = {}
         if s1 is None or s2 is None:
             if self.config['scale_rate_threshold'] is not None:
                 raise AttributeError("Current configuration considers keypoint scales for filtering, but scales have not been provided.\n"
@@ -133,13 +155,14 @@ class AdalamFilter:
                     "Current configuration considers keypoint orientations for filtering, but orientations have not been provided.\n"
                     "Please either provide orientations or set 'orientation_difference_threshold' to None to disable orientations filtering")
         k1, k2, d1, d2, o1, o2, s1, s2 = self.__to_torch(k1, k2, d1, d2, o1, o2, s1, s2)
+        extras = {k: self.__to_torch(v) for k, v in extras.items()}
         distmat = dist_matrix(d1, d2, is_normalized=False)
-        dd12, nn12 = torch.topk(distmat, k=2, dim=1, largest=False)  # (n1, 2)
-
-        putative_matches = nn12[:, 0]
-        scores = dd12[:, 0] / dd12[:, 1].clamp_min_(1e-3)
+        
+        putative_matches, scores = self.calculate_matches_and_scores(distmat, extras)  # Note: There is a side effect on extras.
+        # Note: These are called scores but actually lower is better.
+        
         if self.config['force_seed_mnn']:
-            dd21, nn21 = torch.min(distmat, dim=0)  # (n2,)
+            _, nn21 = torch.min(distmat, dim=0)  # (n2,)
             mnn = nn21[putative_matches] == torch.arange(k1.shape[0], device=self.config['device'])
         else:
             mnn = None

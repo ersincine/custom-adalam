@@ -14,7 +14,8 @@ def extract_keypoints(impath, nfeatures=8000, rootsift=True):
     pts = np.array([k.pt for k in kp], dtype=np.float32)
     ors = np.array([k.angle for k in kp], dtype=np.float32)
     scs = np.array([k.size for k in kp], dtype=np.float32)
-    return pts, ors, scs, desc, im
+    res = np.array([k.response for k in kp], dtype=np.float32)
+    return pts, ors, scs, res, desc, im
 
 
 def show_matches(img1, img2, k1, k2, target_dim=800.):

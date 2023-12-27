@@ -21,15 +21,18 @@ def run_on_img_pair(img_pair_path, matcher=AdalamFilter(), robust_estimator=cv.R
     img0_path = img_pair_path + '0.png'
     img1_path = img_pair_path + '1.png'
     H_path = img_pair_path + 'H.txt'
-    pts1, ors1, scs1, desc1, im1 = extract_keypoints(img0_path, nfeatures=8000, rootsift=False)
-    pts2, ors2, scs2, desc2, im2 = extract_keypoints(img1_path, nfeatures=8000, rootsift=False)
+    pts1, ors1, scs1, res1, desc1, im1 = extract_keypoints(img0_path, nfeatures=8000, rootsift=False)
+    pts2, ors2, scs2, res2, desc2, im2 = extract_keypoints(img1_path, nfeatures=8000, rootsift=False)
     
+    extras = {'r1': res1}
+
     time_start = time.time()
     matches = matcher.match_and_filter(k1=pts1, k2=pts2, 
                                        d1=desc1, d2=desc2, 
                                        im1shape=im1.shape[:2], im2shape=im2.shape[:2], 
                                        o1=ors1, o2=ors2, 
-                                       s1=scs1, s2=scs2)
+                                       s1=scs1, s2=scs2,
+                                       extras=extras)
     time_end = time.time()
     time_elapsed = time_end - time_start
 
@@ -59,19 +62,18 @@ def run_on_dataset(dataset='oxford', matcher=AdalamFilter(), robust_estimator=cv
     return ace_over_diag_dist_list, runtime_list
 
 
-def main(dataset='oxford', matcher=AdalamFilter(), robust_estimator=cv.RANSAC, verbose=True):
+def main(dataset='oxford', matcher=AdalamFilter(), robust_estimator=cv.RANSAC, error_tolerance = 0.05, verbose=True):
     ace_over_diag_dist_list, runtime_list = run_on_dataset(dataset=dataset, matcher=matcher, robust_estimator=robust_estimator)
     runtime_avg = np.mean(runtime_list)
     if verbose:
-        print('Average runtime: ', runtime_avg)
-    error_tolerance = 0.05
+        print('Average runtime:', runtime_avg)
     success_count = 0
     for ace_over_diag_dist in ace_over_diag_dist_list:
         if ace_over_diag_dist < error_tolerance:
             success_count += 1
     success_rate = success_count / len(ace_over_diag_dist_list)
     if verbose:
-        print('Success rate: ', success_rate)
+        print('Success rate:', success_rate)
     return success_rate, runtime_avg
 
 
@@ -81,4 +83,8 @@ if __name__ == '__main__':
     elif not os.path.exists('homography/datasets'):
         print('Run main.py in homography')
     else:
-        main()
+        main(matcher=AdalamFilter({'scoring_method': 'rt', 'match_threshold': 0.8 ** 2}))
+        #main(matcher=AdalamFilter({'scoring_method': 'r1', 'match_threshold': -0.3 * 0.15}))
+
+# Note: match_threshold for rt is squared because dist_matrix returns squared distances.
+# TODO: We can pass -0.3 as match_threshold and 0.15 can be calculated as maximum of the responses.

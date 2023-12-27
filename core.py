@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 
-def select_seeds(dist1: torch.Tensor, R1: float, scores1: torch.Tensor, fnn12: torch.Tensor, mnn: torch.Tensor):
+def select_seeds(dist1: torch.Tensor, R1: float, scores1: torch.Tensor, fnn12: torch.Tensor, mnn: torch.Tensor, match_thr: float):
     """
         Select seed correspondences among the set of available matches.
 
@@ -29,10 +29,10 @@ def select_seeds(dist1: torch.Tensor, R1: float, scores1: torch.Tensor, fnn12: t
     # find out who scores higher than all of its neighbors: seed points
     if mnn is not None:
         im1bs = (~torch.any(im1neighmap & im1scorescomp & mnn.unsqueeze(0),
-                            dim=1)) & mnn & (scores1 < 0.8**2)  # (n1,)
+                            dim=1)) & mnn & (scores1 < match_thr)  # (n1,)
     else:
         im1bs = (~torch.any(im1neighmap & im1scorescomp, dim=1)) & (scores1 <
-                                                                    0.8**2)
+                                                                    match_thr)
 
     # collect all seeds in both images and the 1NN of the seeds of the other image
     im1seeds = torch.where(im1bs)[0]  # (n1bs) index format
@@ -221,6 +221,7 @@ def adalam_core(k1: torch.Tensor,
             Filtered putative matches.
             A long tensor with shape (num_filtered_matches, 2) with indices of corresponding keypoints in k1 and k2.
     """
+    MATCH_THR = config['match_threshold']
     AREA_RATIO = config['area_ratio']
     SEARCH_EXP = config['search_expansion']
     RANSAC_ITERS = config['ransac_iters']
@@ -247,7 +248,7 @@ def adalam_core(k1: torch.Tensor,
     dist1 = dist_matrix(k1, k1)
 
     # Select seeds
-    im1seeds, im2seeds = select_seeds(dist1, R1, scores1, fnn12, mnn)
+    im1seeds, im2seeds = select_seeds(dist1, R1, scores1, fnn12, mnn, MATCH_THR)
 
     # Find the neighboring and coherent keyopints consistent with each seed
     local_neighs_mask, rdims, im1seeds, im2seeds = extract_neighborhood_sets(
@@ -256,7 +257,7 @@ def adalam_core(k1: torch.Tensor,
 
     if rdims.shape[0] == 0:
         # No seed point survived. Just output ratio-test matches. This should happen very rarely.
-        absolute_im1idx = torch.where(scores1 < 0.8**2)[0]
+        absolute_im1idx = torch.where(scores1 < MATCH_THR)[0]
         absolute_im2idx = fnn12[absolute_im1idx]
         return torch.stack([absolute_im1idx, absolute_im2idx], dim=1)
 
