@@ -83,12 +83,12 @@ if __name__ == '__main__':
     elif not os.path.exists('homography/datasets'):
         print('Run main.py in homography')
     else:
-        # main(matcher=AdalamFilter({'scoring_method': 'rt', 'match_threshold': 0.8 ** 2}))
-        # main(matcher=AdalamFilter({'scoring_method': 'r1', 'match_threshold': -0.3 * 0.15}))
-        # main(matcher=AdalamFilter({'scoring_method': 'FoRs', 'match_threshold': -0.2 * 0.015}))
-        # main(matcher=AdalamFilter({'scoring_method': 'MoRs', 'match_threshold': -0.3 * 0.15}))
-        # main(matcher=AdalamFilter({'scoring_method': 'HAoRs', 'match_threshold': -0.3 * 0.15}))
-        # main(matcher=AdalamFilter({'scoring_method': 'd', 'match_threshold': 50 ** 2}))
+        main(matcher=AdalamFilter({'scoring_method': 'rt', 'match_threshold': 0.8 ** 2}))
+        main(matcher=AdalamFilter({'scoring_method': 'r1', 'match_threshold': -0.3 * 0.15}))
+        main(matcher=AdalamFilter({'scoring_method': 'FoRs', 'match_threshold': -0.2 * 0.015}))
+        main(matcher=AdalamFilter({'scoring_method': 'MoRs', 'match_threshold': -0.3 * 0.15}))
+        main(matcher=AdalamFilter({'scoring_method': 'HMoRs', 'match_threshold': -0.3 * 0.15}))
+        main(matcher=AdalamFilter({'scoring_method': 'd', 'match_threshold': 250 ** 2}))
         main(matcher=AdalamFilter({'scoring_method': 'fginn', 'match_threshold': 0.8 ** 2}))
 
 # Note: match_threshold for rt is squared because dist_matrix returns squared distances.

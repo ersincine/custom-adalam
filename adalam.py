@@ -10,8 +10,8 @@ import sqlite3
 
 class AdalamFilter:
     DEFAULT_CONFIG = {
-        'scoring_method': "rt",  # 'rt' for ratio test, 'r1' for response of the keypoint in the first image, 'FoRs' for factor of responses of keypoints in matches, 'MoRs' for maximum of responses of keypoints in matches, 'HAoRs' for harmonic average of responses of keypoints in matches, 'd' for distance between keypoints in matches, 'fginn' for FG-INN scores
-        'match_threshold': 0.8 ** 2,  # Threshold on the score for a match to be considered as seed. Higher values produce fewer matches.
+        'scoring_method': "rt",  # 'rt' for ratio test, 'r1' for response of the keypoint in the first image, 'FoRs' for factor of responses of keypoints in matches, 'MoRs' for maximum of responses of keypoints in matches, 'HMoRs' for harmonic mean of responses of keypoints in matches, 'd' for distance between descriptors in matches, 'fginn' for FGINN scores
+        'match_threshold': 0.8 ** 2,  # Threshold on the score for a match to be considered as seed. Higher values produce more matches.
         'area_ratio': 100,  # Ratio between seed circle area and image area. Higher values produce more seeds with smaller neighborhoods.
         'search_expansion': 4,  # Expansion factor of the seed circle radius for the purpose of collecting neighborhoods. Increases neighborhood radius without changing seed distribution
         'ransac_iters': 128,  # Fixed number of inner GPU-RANSAC iterations
@@ -44,35 +44,45 @@ class AdalamFilter:
                 self.config[key] = val
 
 
-    def calculate_matches_and_scores(self, distmat: torch.Tensor, extras: dict):
-        if self.config['scoring_method'] == 'rt':
+    def calculate_matches_and_scores(self, distmat: torch.Tensor, extras: dict, k2: torch.Tensor = None):
+        scoring_method = self.config['scoring_method']
+        if scoring_method == 'rt':
             dd12, nn12 = torch.topk(distmat, k=2, dim=1, largest=False)  # (n1, 2)
             putative_matches = nn12[:, 0]
             scores = dd12[:, 0] / dd12[:, 1].clamp_min_(1e-3)
-        elif self.config['scoring_method'] == 'r1':
+        elif scoring_method == 'r1':
             _, putative_matches = torch.min(distmat, dim=1)  # (n1,)
             scores = -next(extras['r1'])  # Higher response is better
-        elif self.config['scoring_method'] == 'FoRs':
+        elif scoring_method == 'FoRs':
             _, putative_matches = torch.min(distmat, dim=1)  # (n1,)
             r2_ordered = next(extras['r2'])[putative_matches]
             scores = -next(extras['r1']) * r2_ordered  # Higher is better
-        elif self.config['scoring_method'] == 'MoRs':
+        elif scoring_method == 'MoRs':
             _, putative_matches = torch.min(distmat, dim=1)  # (n1,)
             r2_ordered = next(extras['r2'])[putative_matches]
             scores = -torch.max(next(extras['r1']), r2_ordered)  # Higher is better
-        elif self.config['scoring_method'] == 'HAoRs':
+        elif scoring_method == 'HMoRs':
             _, putative_matches = torch.min(distmat, dim=1)  # (n1,)
             r1 = next(extras['r1']).unsqueeze(1) # (n1, 1)
             r2_ordered = next(extras['r2'])[putative_matches].unsqueeze(1)  # (n1, 1)
             responses = torch.cat((r1, r2_ordered), dim=1)  # (n1, 2)
             scores = -2 / (1 / responses[:, 0] + 1 / responses[:, 1])  # Higher is better
-        elif self.config['scoring_method'] == 'd':
+            # TODO: Consider implementing the following expression instead:
+            # 2 / (1 / x + 1 / y)
+            # 2 / (x + y) / xy
+            # 2xy / (x + y)
+        elif scoring_method == 'd':
             dd12, putative_matches = torch.min(distmat, dim=1)  # (n1,)
             scores = dd12
-        elif self.config['scoring_method'] == 'fginn':
-            fginn_threshold = 20000
+        elif scoring_method == 'fginn':
+            fginn_threshold = 10 ** 2
             dd12, putative_matches = torch.min(distmat, dim=1)  # (n1,) first similar
-            dd12_, _ = torch.min(distmat.masked_fill(distmat <= fginn_threshold, float('inf')), dim=1)  # (n1,) second similar
+            distances_between_k2 = dist_matrix(k2, k2, is_normalized=False)  # (n2, n2)
+            distmat_mask = distances_between_k2[putative_matches] <= fginn_threshold # (n1, n2)
+            distmat_masked = distmat.masked_fill(distmat_mask, float('inf'))  # (n1, n2)
+            assert distmat_masked.shape == distmat.shape
+            dd12_, _ = torch.min(distmat_masked, dim=1)  # (n1,) second similar
+            assert dd12_.shape == (distmat.shape[0],)
             scores = dd12 / dd12_.clamp_min_(1e-3)
         else:
             raise NotImplementedError(f'Unknown scoring method: {self.config["scoring_method"]}')
@@ -180,7 +190,7 @@ class AdalamFilter:
         extras = {k: self.__to_torch(v) for k, v in extras.items()}
         distmat = dist_matrix(d1, d2, is_normalized=False)
         
-        putative_matches, scores = self.calculate_matches_and_scores(distmat, extras)  # Note: There is a side effect on extras.
+        putative_matches, scores = self.calculate_matches_and_scores(distmat, extras, k2)  # Note: There is a side effect on extras.
         # Note: These are called scores but actually lower is better.
         
         if self.config['force_seed_mnn']:
