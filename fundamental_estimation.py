@@ -1,3 +1,4 @@
+import os
 import time
 import numpy as np
 import cv2 as cv
@@ -55,45 +56,66 @@ def visualize_essential_matrix(img1, img2, pts1, pts2, E, K1, K2, num_epilines=N
     F = calculate_fundamental_matrix_from_essential_matrix(E, K1, K2)
     return visualize_fundamental_matrix(img1, img2, pts1, pts2, F, num_epilines=num_epilines)
 
-def read_extrinsics(filename: str):
-    assert filename.endswith('.png'), 'Filename must end with .png'
+def calculate_q_t_error(q_true, t_true, q_estimated, t_estimated):
+    assert isinstance(q_true, np.ndarray)
+    assert isinstance(t_true, np.ndarray)
+    assert isinstance(q_estimated, np.ndarray)
+    assert isinstance(t_estimated, np.ndarray)
     
-    timestamp = float(filename[:-4])
+    t_estimated = t_estimated.flatten()
+    t_true = t_true.flatten()
     
-    with open('groundtruth.txt', 'r') as f:
-        lines = f.read().splitlines()
-        assert all([line.startswith('#') for line in lines[:3]])
-        lines = lines[3:]
-        
-        nearest_distance = float('inf')
-        nearest_idx = None
-        
-        for line_idx, line in enumerate(lines):
-            values = line.split(' ')
-            
-            current_distance = abs(float(values[0]) - timestamp)
-            if nearest_distance > current_distance:
-                nearest_distance = current_distance
-                nearest_idx = line_idx
-        
-        if nearest_idx is not None:
-            values = lines[nearest_idx].split(' ')
-            tx = float(values[1])
-            ty = float(values[2])
-            tz = float(values[3])
-            qx = float(values[4])
-            qy = float(values[5])
-            qz = float(values[6])
-            qw = float(values[7])
-            return tx, ty, tz, qx, qy, qz, qw
-        
-    assert False, 'Timestamp not found in groundtruth.txt'
+    assert len(q_true.shape) == 1 and q_true.shape[0] == 4
+    assert len(t_true.shape) == 1 and t_true.shape[0] == 3
+    assert len(q_estimated.shape) == 1 and q_estimated.shape[0] == 4
+    assert len(t_estimated.shape) == 1 and t_estimated.shape[0] == 3
+    
+    eps = 1e-15
 
-def main():
-    matcher = AdalamFilter()
-    
-    img0_path = '1305032353.993165.png'
-    img1_path = '1305032354.025237.png' # 1305032354.025237.png
+    q_estimated = q_estimated / (np.linalg.norm(q_estimated) + eps)
+    q_true = q_true / (np.linalg.norm(q_true) + eps)
+    loss_q = np.maximum(eps, (1.0 - np.sum(q_estimated * q_true)**2))
+    err_q = np.arccos(1 - 2 * loss_q)
+
+    t_estimated = t_estimated / (np.linalg.norm(t_estimated) + eps)
+    t_true = t_true / (np.linalg.norm(t_true) + eps)
+    loss_t = np.maximum(eps, (1.0 - np.sum(t_estimated * t_true)**2))
+    err_t = np.arccos(np.sqrt(1 - loss_t))
+
+    assert not (np.sum(np.isnan(err_q)) or np.sum(np.isnan(err_t))), 'This should never happen! Debug here'
+
+    return err_q, err_t
+
+def calculate_AUC_5_20(err_qt):
+    if len(err_qt) > 0:
+        err_qt = np.asarray(err_qt)
+        # Take the maximum among q and t errors
+        err_qt = np.max(err_qt, axis=1)
+        # Convert to degree
+        err_qt = err_qt * 180.0 / np.pi
+        # Make infs to a large value so that np.histogram can be used.
+        err_qt[err_qt == np.inf] = 1e6
+
+        # Create histogram
+        bars = np.arange(21)
+        qt_hist, _ = np.histogram(err_qt, bars)
+        # Normalize histogram with all possible pairs
+        num_pair = float(len(err_qt))
+        qt_hist = qt_hist.astype(float) / num_pair
+
+        # Make cumulative
+        qt_acc = np.cumsum(qt_hist)
+    else:
+        qt_acc = [0] * 20
+        
+    return np.mean(qt_acc[:5]), np.mean(qt_acc)
+
+def run_on_img_pair(img_pair_path, matcher=AdalamFilter(), robust_estimator=cv.RANSAC):
+    img0_path = img_pair_path + '0.png'
+    img1_path = img_pair_path + '1.png'
+    K_path = img_pair_path + 'k.txt'
+    R_path = img_pair_path + 'r.txt'
+    t_path = img_pair_path + 't.txt'
     pts1, ors1, scs1, res1, desc1, img1 = extract_keypoints(img0_path, nfeatures=8000, rootsift=False)
     pts2, ors2, scs2, res2, desc2, img2 = extract_keypoints(img1_path, nfeatures=8000, rootsift=False)
     
@@ -110,54 +132,57 @@ def main():
     time_elapsed = time_end - time_start
 
     matches = matches.cpu().numpy()
+    print(matches)
     
     pts1 = pts1[matches[:, 0]]
     pts2 = pts2[matches[:, 1]]
     pts1 = np.int32(pts1)
     pts2 = np.int32(pts2)
+    print(pts1)
+    print(pts2)
     
-    # F_estimated, mask = cv.findFundamentalMat(pts1, pts2, cv.FM_RANSAC, 3, 0.99, None)
-    # assert F_estimated is not None, 'Fundamental matrix estimation failed'
+    K = np.loadtxt(K_path)
+    R_true = np.loadtxt(R_path)
+    t_true = np.loadtxt(t_path)
     
-    fx = 525.0  # focal length x
-    fy = 525.0  # focal length y
-    cx = 319.5  # optical center x
-    cy = 239.5  # optical center y
-    K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
-    
-    E_estimated, mask = cv.findEssentialMat(pts1, pts2, cameraMatrix=K, method=cv.RANSAC, prob=0.999, threshold=1.0, maxIters=1000)
+    # TODO: handle when mathes are not enough
+    # TODO: what should we return when essential matrix could not calculated?
+    E_estimated, mask = cv.findEssentialMat(pts1, pts2, cameraMatrix=K, method=robust_estimator, prob=0.999, threshold=1.0, maxIters=1000)
     assert E_estimated is not None, 'Essential matrix estimation failed'
-    F_estimated = calculate_fundamental_matrix_from_essential_matrix(E_estimated, K, K)
     
     pts1 = pts1[mask.ravel() == 1]
     pts2 = pts2[mask.ravel() == 1]
     
-    img_with_lines_and_points, img_with_points = visualize_fundamental_matrix(img1, img2, pts1, pts2, F_estimated, num_epilines=20)
-    cv.imwrite('img_with_lines_and_points.png', img_with_lines_and_points)
-    cv.imwrite('img_with_points.png', img_with_points)
-    
-    tx0, ty0, tz0, qx0, qy0, qz0, qw0 = read_extrinsics(img0_path)
-    tx1, ty1, tz1, qx1, qy1, qz1, qw1 = read_extrinsics(img1_path)
-    
-    img1_quaternion = Quaternion(torch.tensor([qw0, qx0, qy0, qz0]))
-    img2_quaternion = Quaternion(torch.tensor([qw1, qx1, qy1, qz1]))
-    # img1_euler = img1_quaternion.to_euler()
-    # img2_euler = img2_quaternion.to_euler()
-    
-    t1 = torch.tensor([[tx0], [ty0], [tz0]])
-    t2 = torch.tensor([[tx1], [ty1], [tz1]])
-    R1 = img1_quaternion.matrix()
-    R2 = img2_quaternion.matrix()
-    
-    R_true, t_true = relative_camera_motion(R1, t1, R2, t2)
     _, R_estimated, t_estimated, _ = cv.recoverPose(E_estimated, pts1, pts2, cameraMatrix=K)
     
-    print(R_true)
-    print(t_true)
-    print(R_estimated)
-    print(t_estimated)
+    q_true = Quaternion.from_matrix(R_true)
+    q_estimated = Quaternion.from_matrix(torch.from_numpy(R_estimated))
     
-    # TODO: Calculate error
+    q_err, t_err = calculate_q_t_error(q_true.data.detach().numpy(), t_true, q_estimated.data.detach().numpy(), t_estimated)
+    return q_err, t_err, time_elapsed
 
+
+def run_on_datasets(datasets, matcher=AdalamFilter(), robust_estimator=cv.RANSAC):
+    for dataset in datasets:
+        dataset_path = 'datasets/' + dataset + '/'
+        img_pair_paths = [dataset_path + img_pair_name + '/' for img_pair_name in os.listdir(dataset_path)]
+        err_qt_list = []
+        runtime_list = []
+        for img_pair_path in img_pair_paths:
+            q_err, t_err, elapsed_time = run_on_img_pair(img_pair_path, matcher, robust_estimator)
+            err_qt_list.append((q_err, t_err))
+            runtime_list.append(elapsed_time)
+    
+    auc5, auc20 = calculate_AUC_5_20(err_qt_list)
+    return auc5, auc20, runtime_list
+
+def main():
+    matcher = AdalamFilter({'scoring_method': 'fginn'})
+    auc5, auc20, runtime_list = run_on_datasets(os.listdir('datasets/'), matcher=matcher)
+    
+    print(auc5)
+    print(auc20)
+    
 if __name__ == '__main__':
+    # TODO: hyperparameter optimization using TUM dataset
     main()
