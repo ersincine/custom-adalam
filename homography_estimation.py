@@ -21,8 +21,10 @@ def run_on_img_pair(img_pair_path, matcher=AdalamFilter(), robust_estimator=cv.R
     img0_path = img_pair_path + '0.png'
     img1_path = img_pair_path + '1.png'
     H_path = img_pair_path + 'H.txt'
-    pts1, ors1, scs1, res1, desc1, im1 = extract_keypoints(img0_path, nfeatures=8000, rootsift=False)
-    pts2, ors2, scs2, res2, desc2, im2 = extract_keypoints(img1_path, nfeatures=8000, rootsift=False)
+    im1 = cv.imread(img0_path, cv.IMREAD_COLOR)
+    im2 = cv.imread(img1_path, cv.IMREAD_COLOR)
+    pts1, ors1, scs1, res1, desc1, im1 = extract_keypoints(im1, nfeatures=8000, rootsift=False)
+    pts2, ors2, scs2, res2, desc2, im2 = extract_keypoints(im2, nfeatures=8000, rootsift=False)
     
     extras = {'r1': res1, 'r2': res2}
 

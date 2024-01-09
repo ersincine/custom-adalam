@@ -4,6 +4,7 @@ import numpy as np
 import cv2 as cv
 import random
 import torch
+import kornia
 from kornia.geometry import Quaternion
 from kornia.geometry.epipolar import relative_camera_motion
 
@@ -70,6 +71,11 @@ def calculate_q_t_error(q_true, t_true, q_estimated, t_estimated):
     assert len(q_estimated.shape) == 1 and q_estimated.shape[0] == 4
     assert len(t_estimated.shape) == 1 and t_estimated.shape[0] == 3
     
+    print(f'{q_true=}')
+    print(f'{t_true=}')
+    print(f'{q_estimated=}')
+    print(f'{t_estimated=}')
+    
     eps = 1e-15
 
     q_estimated = q_estimated / (np.linalg.norm(q_estimated) + eps)
@@ -110,14 +116,9 @@ def calculate_AUC_5_20(err_qt):
         
     return np.mean(qt_acc[:5]), np.mean(qt_acc)
 
-def run_on_img_pair(img_pair_path, matcher=AdalamFilter(), robust_estimator=cv.RANSAC):
-    img0_path = img_pair_path + '0.png'
-    img1_path = img_pair_path + '1.png'
-    K_path = img_pair_path + 'k.txt'
-    R_path = img_pair_path + 'r.txt'
-    t_path = img_pair_path + 't.txt'
-    pts1, ors1, scs1, res1, desc1, img1 = extract_keypoints(img0_path, nfeatures=8000, rootsift=False)
-    pts2, ors2, scs2, res2, desc2, img2 = extract_keypoints(img1_path, nfeatures=8000, rootsift=False)
+def estimate_essential_matrix(img1, img2, K, matcher=AdalamFilter(), robust_estimator=cv.RANSAC):
+    pts1, ors1, scs1, res1, desc1, img1 = extract_keypoints(img1, nfeatures=8000, rootsift=False)
+    pts2, ors2, scs2, res2, desc2, img2 = extract_keypoints(img2, nfeatures=8000, rootsift=False)
     
     extras = {'r1': res1, 'r2': res2}
 
@@ -132,30 +133,49 @@ def run_on_img_pair(img_pair_path, matcher=AdalamFilter(), robust_estimator=cv.R
     time_elapsed = time_end - time_start
 
     matches = matches.cpu().numpy()
-    print(matches)
+    
+    print(matches.shape)
     
     pts1 = pts1[matches[:, 0]]
     pts2 = pts2[matches[:, 1]]
     pts1 = np.int32(pts1)
     pts2 = np.int32(pts2)
-    print(pts1)
-    print(pts2)
     
+    if matches.shape[0] < 5:
+        return None, None, None, time_elapsed
+
+    E_estimated, mask = cv.findEssentialMat(pts1, pts2, K, method=robust_estimator, prob=0.99, threshold=1.0, maxIters=1000)
+    
+    pts1 = pts1[mask.ravel() == 1]
+    pts2 = pts2[mask.ravel() == 1]
+    print(pts1.shape[0])
+    return E_estimated, pts1, pts2, time_elapsed
+
+def run_on_img_pair(img_pair_path, matcher=AdalamFilter(), robust_estimator=cv.RANSAC):
+    img0_path = img_pair_path + '0.png'
+    img1_path = img_pair_path + '1.png'
+    K_path = img_pair_path + 'k.txt'
+    R_path = img_pair_path + 'r.txt'
+    t_path = img_pair_path + 't.txt'
+    
+    img0 = cv.imread(img0_path, cv.IMREAD_COLOR)
+    img1 = cv.imread(img1_path, cv.IMREAD_COLOR)
     K = np.loadtxt(K_path)
     R_true = np.loadtxt(R_path)
     t_true = np.loadtxt(t_path)
     
-    # TODO: handle when mathes are not enough
-    # TODO: what should we return when essential matrix could not calculated?
-    E_estimated, mask = cv.findEssentialMat(pts1, pts2, cameraMatrix=K, method=robust_estimator, prob=0.999, threshold=1.0, maxIters=1000)
-    assert E_estimated is not None, 'Essential matrix estimation failed'
+    E_estimated, pts1, pts2, time_elapsed = estimate_essential_matrix(img0, img1, K, matcher, robust_estimator)
+    if E_estimated is None:
+        return np.pi, np.pi / 2, time_elapsed
     
-    pts1 = pts1[mask.ravel() == 1]
-    pts2 = pts2[mask.ravel() == 1]
+    # img_with_lines_and_points, img_with_points = visualize_essential_matrix(img0, img1, pts1, pts2, E_estimated, K, K, 50)
+    
+    # cv.imshow("", img_with_lines_and_points)
+    # cv.waitKey(0)
     
     _, R_estimated, t_estimated, _ = cv.recoverPose(E_estimated, pts1, pts2, cameraMatrix=K)
     
-    q_true = Quaternion.from_matrix(R_true)
+    q_true = Quaternion.from_matrix(torch.from_numpy(R_true))
     q_estimated = Quaternion.from_matrix(torch.from_numpy(R_estimated))
     
     q_err, t_err = calculate_q_t_error(q_true.data.detach().numpy(), t_true, q_estimated.data.detach().numpy(), t_estimated)
@@ -172,6 +192,7 @@ def run_on_datasets(datasets, matcher=AdalamFilter(), robust_estimator=cv.RANSAC
             q_err, t_err, elapsed_time = run_on_img_pair(img_pair_path, matcher, robust_estimator)
             err_qt_list.append((q_err, t_err))
             runtime_list.append(elapsed_time)
+            print(img_pair_path, 'q_err:', q_err, 't_err:', t_err)
     
     auc5, auc20 = calculate_AUC_5_20(err_qt_list)
     return auc5, auc20, runtime_list
